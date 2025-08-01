@@ -6,7 +6,7 @@ class Program
 {
     static async Task Main(string[] args)
     {
-        string apiKey = "f303e6f4-69f0-4a8b-9a1f-dbbe0f86f535";
+        string apiKey = "API_KEY";
         var checker = new CVEChecker(apiKey);
         
         Console.WriteLine("CPE veritabanı yükleniyor.");
