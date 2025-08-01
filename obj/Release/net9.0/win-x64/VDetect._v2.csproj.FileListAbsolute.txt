@@ -1,0 +1,5 @@
+C:\Users\zzeyn\VDetect_v2\obj\Release\net9.0\win-x64\VDetect._v2.csproj.AssemblyReference.cache
+C:\Users\zzeyn\VDetect_v2\obj\Release\net9.0\win-x64\VDetect._v2.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\zzeyn\VDetect_v2\obj\Release\net9.0\win-x64\VDetect._v2.AssemblyInfoInputs.cache
+C:\Users\zzeyn\VDetect_v2\obj\Release\net9.0\win-x64\VDetect._v2.AssemblyInfo.cs
+C:\Users\zzeyn\VDetect_v2\obj\Release\net9.0\win-x64\VDetect._v2.csproj.CoreCompileInputs.cache

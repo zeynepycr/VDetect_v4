@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "dgSpecHash": "/LpN+tgLiXU=",
+  "success": true,
+  "projectFilePath": "C:\\Users\\zzeyn\\VDetect_v4\\VDetect_v2.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\zzeyn\\.nuget\\packages\\fuzzysharp\\2.0.2\\fuzzysharp.2.0.2.nupkg.sha512",
+    "C:\\Users\\zzeyn\\.nuget\\packages\\newtonsoft.json\\13.0.3\\newtonsoft.json.13.0.3.nupkg.sha512",
+    "C:\\Users\\zzeyn\\.nuget\\packages\\system.codedom\\9.0.7\\system.codedom.9.0.7.nupkg.sha512",
+    "C:\\Users\\zzeyn\\.nuget\\packages\\system.management\\9.0.7\\system.management.9.0.7.nupkg.sha512"
+  ],
+  "logs": []
+}
