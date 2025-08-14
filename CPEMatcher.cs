@@ -5,6 +5,7 @@ using Newtonsoft.Json;
 using FuzzySharp;
 using System.Management;
 using System;
+using System.Text.RegularExpressions;
 
 public class CPEEntry
 {
@@ -12,36 +13,27 @@ public class CPEEntry
     public string Title { get; set; }
     public string Vendor { get; set; }
     public string Product { get; set; }
-    
-    // NIST CPE veritabanı için ek alanlar
-    public string? Version { get; set; }
-    public string? Update { get; set; }
-    public string? Edition { get; set; }
-    public string? Language { get; set; }
-    public string? SwEdition { get; set; }
-    public string? TargetSw { get; set; }
-    public string? TargetHw { get; set; }
-    public string? Other { get; set; }
+
 }
 
-// NIST CPE JSON formatı için alternatif sınıf
+// NIST formatı için sınıflar
 public class NistCPEEntry
 {
     [JsonProperty("cpe23Uri")]
     public string? Cpe23Uri { get; set; }
-    
+
     [JsonProperty("cpeName")]
     public string? CpeName { get; set; }
-    
+
     [JsonProperty("lastModifiedDate")]
     public string? LastModifiedDate { get; set; }
-    
+
     [JsonProperty("titles")]
     public List<CPETitle>? Titles { get; set; }
-    
+
     [JsonProperty("refs")]
     public List<CPEReference>? References { get; set; }
-    
+
     [JsonProperty("deprecated")]
     public bool Deprecated { get; set; }
 }
@@ -50,7 +42,7 @@ public class CPETitle
 {
     [JsonProperty("title")]
     public string? Title { get; set; }
-    
+
     [JsonProperty("lang")]
     public string? Language { get; set; }
 }
@@ -59,23 +51,22 @@ public class CPEReference
 {
     [JsonProperty("ref")]
     public string? Reference { get; set; }
-    
+
     [JsonProperty("type")]
     public string? Type { get; set; }
 }
 
-// NIST CPE veritabanının ana yapısı
 public class NistCPEDatabase
 {
     [JsonProperty("resultsPerPage")]
     public int ResultsPerPage { get; set; }
-    
+
     [JsonProperty("startIndex")]
     public int StartIndex { get; set; }
-    
+
     [JsonProperty("totalResults")]
     public int TotalResults { get; set; }
-    
+
     [JsonProperty("result")]
     public NistCPEResult? Result { get; set; }
 }
@@ -84,23 +75,76 @@ public class NistCPEResult
 {
     [JsonProperty("dataType")]
     public string? DataType { get; set; }
-    
+
     [JsonProperty("feedVersion")]
     public string? FeedVersion { get; set; }
-    
+
     [JsonProperty("cpeCount")]
     public int CpeCount { get; set; }
-    
+
     [JsonProperty("feedTimestamp")]
     public string? FeedTimestamp { get; set; }
-    
+
     [JsonProperty("cpes")]
     public List<NistCPEEntry>? Cpes { get; set; }
 }
+
 public class CPEMatcher
 {
-    private List<CPEEntry> cpeList;
+    private List<CPEEntry> _cpeList;
+    public bool IsInitialized { get; private set; } = false;
 
+    // "7-Zip" -> "Igor Pavlov" gibi algoritmaların yakalayamayacağı durumlar için hardcoded eşleştirme
+    private readonly Dictionary<string, string> _hardcodedMatches = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        { "7-zip", "igor_pavlov 7-zip" },
+        { "7zip", "igor_pavlov 7-zip" },
+        { "notepad++", "notepad-plus-plus" },
+        { "notepad plus plus", "notepad-plus-plus" },
+        { "visual studio code", "microsoft visual_studio_code" },
+        { "vscode", "microsoft visual_studio_code" },
+        { "vs code", "microsoft visual_studio_code" },
+        
+        // Microsoft ürünleri
+        { "microsoft visual c++", "microsoft visual_c" },
+        { "microsoft visual c", "microsoft visual_c" },
+        { "microsoft .net", "microsoft .net" },
+        { "microsoft asp.net", "microsoft asp.net" },
+        { "microsoft windows", "microsoft windows" },
+        { "office", "microsoft office" },
+        { "microsoft office", "microsoft office" },
+        
+        // Tarayıcılar
+        { "google chrome", "google chrome" },
+        { "chrome", "google chrome" },
+        { "mozilla firefox", "mozilla firefox" },
+        { "firefox", "mozilla firefox" },
+        { "microsoft edge", "microsoft edge" },
+        { "edge", "microsoft edge" },
+        
+        // Diğer popüler uygulamalar
+        { "adobe reader", "adobe acrobat_reader" },
+        { "adobe acrobat", "adobe acrobat" },
+        { "java", "oracle java" },
+        { "oracle java", "oracle java" },
+        { "node.js", "nodejs node.js" },
+        { "nodejs", "nodejs node.js" },
+        { "python", "python python" },
+        { "git", "git git" },
+        { "putty", "simon_tatham putty" },
+        { "wireshark", "wireshark wireshark" },
+        { "virtualbox", "oracle virtualbox" },
+        { "vmware", "vmware vmware_workstation" },
+        { "teamviewer", "teamviewer teamviewer" },
+        { "anydesk", "anydesk anydesk" },
+        { "discord", "discord discord" },
+        { "steam", "valve steam" },
+        { "origin", "electronic_arts origin" },
+        { "ea app", "electronic_arts origin" },
+        { "battle.net", "blizzard_entertainment battle.net" },
+        { "epic games launcher", "epic_games epic_games_launcher" },
+        { "epic games", "epic_games epic_games_launcher" }
+    };
     public CPEMatcher(string dbPath)
     {
         try
@@ -108,81 +152,130 @@ public class CPEMatcher
             if (!File.Exists(dbPath))
             {
                 Console.WriteLine($"[HATA] CPE veritabanı dosyası bulunamadı: {dbPath}");
-                cpeList = new List<CPEEntry>();
+                _cpeList = new List<CPEEntry>();
                 return;
             }
 
             var json = File.ReadAllText(dbPath);
-            Console.WriteLine($"[INFO] CPE veritabanı okunuyor. ({new FileInfo(dbPath).Length / 1024 / 1024} MB)");
+            Console.WriteLine($"[INFO] CPE veritabanı okunuyor. (~{new FileInfo(dbPath).Length / 1024 / 1024} MB)");
 
-            cpeList = new List<CPEEntry>();
-
-            // NIST CPE formatını dene
-            try
+            // Öncelik: Standart array formatı
+            if (TryLoadStandardArray(json, out var listFromStandard))
             {
-                var nistDb = JsonConvert.DeserializeObject<NistCPEDatabase>(json);
-                if (nistDb?.Result?.Cpes != null)
-                {
-                    Console.WriteLine("[INFO] NIST CPE formatı tespit edildi.");
-                    
-                    foreach (var nistEntry in nistDb.Result.Cpes)
-                    {
-                        if (nistEntry.Deprecated) continue; // Deprecated CPE'leri atla
-                        
-                        var cpeEntry = ConvertNistCPEToStandard(nistEntry);
-                        if (cpeEntry != null)
-                            cpeList.Add(cpeEntry);
-                    }
-                }
+                _cpeList = listFromStandard!;
+                Console.WriteLine($"[INFO] Standart CPE formatı yüklendi. Toplam Kayıt: {_cpeList.Count}");
             }
-            catch (Exception ex)
+            else if (TryLoadNist(json, out var listFromNist))
             {
-                Console.WriteLine($"[INFO] NIST formatı okunamadı, standart format deneniyor. ({ex.Message})");
-                
-                // Standart CPE array formatını dene
-                try
-                {
-                    var standardList = JsonConvert.DeserializeObject<List<CPEEntry>>(json);
-                    if (standardList != null)
-                    {
-                        cpeList = standardList;
-                        Console.WriteLine("[INFO] Standart CPE array formatı kullanılıyor.");
-                    }
-                }
-                catch
-                {
-                    // JSONL formatını dene (her satır ayrı JSON)
-                    Console.WriteLine("[INFO] JSONL formatı deneniyor.");
-                    var lines = json.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-                    
-                    foreach (var line in lines)
-                    {
-                        try
-                        {
-                            var entry = JsonConvert.DeserializeObject<CPEEntry>(line.Trim());
-                            if (entry != null)
-                                cpeList.Add(entry);
-                        }
-                        catch
-                        {
-                            // Bu satırı atla
-                        }
-                    }
-                }
+                _cpeList = listFromNist!;
+                Console.WriteLine($"[INFO] NIST CPE formatı yüklendi. Toplam Kayıt: {_cpeList.Count}");
+            }
+            else if (TryLoadJsonl(json, out var listFromJsonl))
+            {
+                _cpeList = listFromJsonl!;
+                Console.WriteLine($"[INFO] JSONL CPE formatı yüklendi. Toplam Kayıt: {_cpeList.Count}");
+            }
+            else
+            {
+                Console.WriteLine("[HATA] CPE veritabanı formatı tanınamadı veya boş.");
+                _cpeList = new List<CPEEntry>();
+                return;
             }
 
-            // Veri kalitesi kontrolü
-            cpeList = cpeList.Where(c => !string.IsNullOrWhiteSpace(c.CpeName) && 
-                                        !string.IsNullOrWhiteSpace(c.Product))
-                               .ToList();
+            _cpeList = _cpeList
+                .Where(c => !string.IsNullOrWhiteSpace(c.CpeName) && !string.IsNullOrWhiteSpace(c.Product))
+                .ToList();
 
-            Console.WriteLine($"[INFO] {cpeList.Count} geçerli CPE girdisi yüklendi.");
-            
+            Console.WriteLine($"[INFO] {_cpeList.Count} geçerli CPE girdisi kullanıma hazır.");
+            IsInitialized = _cpeList.Any();
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[HATA] CPE veritabanı yüklenemedi: {ex.Message}");
-            cpeList = new List<CPEEntry>();
+            _cpeList = new List<CPEEntry>();
+        }
+    }
+
+    private bool TryLoadStandardArray(string json, out List<CPEEntry>? list)
+    {
+        list = null;
+        try
+        {
+            var arr = JsonConvert.DeserializeObject<List<CPEEntry>>(json);
+            if (arr != null && arr.Count > 0)
+            {
+                list = arr;
+                return true;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    private bool TryLoadSingleObject(string json, out List<CPEEntry>? list)
+    {
+        list = null;
+        try
+        {
+            var obj = JsonConvert.DeserializeObject<CPEEntry>(json);
+            if (obj != null && !string.IsNullOrWhiteSpace(obj.CpeName))
+            {
+                list = new List<CPEEntry> { obj };
+                return true;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    private bool TryLoadJsonl(string json, out List<CPEEntry>? list)
+    {
+        list = new List<CPEEntry>();
+        try
+        {
+            var lines = json.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            foreach (var line in lines)
+            {
+                try
+                {
+                    var entry = JsonConvert.DeserializeObject<CPEEntry>(line.Trim());
+                    if (entry != null && !string.IsNullOrWhiteSpace(entry.CpeName))
+                        list.Add(entry);
+                }
+                catch { }
+            }
+            if (list.Count > 0) return true;
+        }
+        catch { }
+        list = null;
+        return false;
+    }
+
+    private bool TryLoadNist(string json, out List<CPEEntry>? list)
+    {
+        list = new List<CPEEntry>();
+        try
+        {
+            var nistDb = JsonConvert.DeserializeObject<NistCPEDatabase>(json);
+            var cpes = nistDb?.Result?.Cpes;
+            if (cpes == null || cpes.Count == 0)
+            {
+                list = null;
+                return false;
+            }
+
+            foreach (var nistEntry in cpes)
+            {
+                if (nistEntry.Deprecated) continue;
+                var converted = ConvertNistCPEToStandard(nistEntry);
+                if (converted != null) list.Add(converted);
+            }
+            return list.Count > 0;
+        }
+        catch
+        {
+            list = null;
+            return false;
         }
     }
 
@@ -193,7 +286,6 @@ public class CPEMatcher
             if (string.IsNullOrWhiteSpace(nistEntry.Cpe23Uri))
                 return null;
 
-            // CPE 2.3 URI'sini parse et: cpe:2.3:a:vendor:product:version:update:edition:language:sw_edition:target_sw:target_hw:other
             var parts = nistEntry.Cpe23Uri.Split(':');
             if (parts.Length < 6) return null;
 
@@ -201,8 +293,7 @@ public class CPEMatcher
             var product = DecodeComponent(parts[4]);
             var version = parts.Length > 5 ? DecodeComponent(parts[5]) : "";
 
-            // Title'ı oluştur
-            var title = nistEntry.Titles?.FirstOrDefault()?.Title ?? $"{vendor} {product}";
+            var title = nistEntry.Titles?.FirstOrDefault()?.Title ?? $"{vendor} {product}".Trim();
 
             return new CPEEntry
             {
@@ -222,217 +313,217 @@ public class CPEMatcher
 
     private string DecodeComponent(string component)
     {
-        if (string.IsNullOrWhiteSpace(component) || component == "*")
-            return "";
-
-        // CPE 2.3 özel karakterlerini decode et
-        return component.Replace("\\!", "!")
-                       .Replace("\\@", "@")
-                       .Replace("\\#", "#")
-                       .Replace("\\$", "$")
-                       .Replace("\\%", "%")
-                       .Replace("\\^", "^")
-                       .Replace("\\&", "&")
-                       .Replace("\\*", "*")
-                       .Replace("\\(", "(")
-                       .Replace("\\)", ")")
-                       .Replace("\\-", "-")
-                       .Replace("\\+", "+")
-                       .Replace("\\=", "=")
-                       .Replace("\\{", "{")
-                       .Replace("\\}", "}")
-                       .Replace("\\[", "[")
-                       .Replace("\\]", "]")
-                       .Replace("\\|", "|")
-                       .Replace("\\\\", "\\")
-                       .Replace("\\:", ":")
-                       .Replace("\\;", ";")
-                       .Replace("\\\"", "\"")
-                       .Replace("\\'", "'")
-                       .Replace("\\<", "<")
-                       .Replace("\\>", ">")
-                       .Replace("\\,", ",")
-                       .Replace("\\.", ".")
-                       .Replace("\\?", "?")
-                       .Replace("\\/", "/")
-                       .Replace("\\~", "~")
-                       .Replace("\\`", "`")
-                       .Replace("_", " ");
+        if (string.IsNullOrWhiteSpace(component) || component == "*") return "";
+        return component.Replace("\\:", ":")
+                        .Replace("\\*", "*")
+                        .Replace("_", " ");
     }
 
-    public string? FindBestCPE(string programName, bool enableDebug = false)
+    public string? FindBestCPE(string programName, string? version, bool enableDebug = false, bool useHardcodedFallback = false)
     {
-        if (cpeList == null || cpeList.Count == 0 || string.IsNullOrWhiteSpace(programName))
+        if (_cpeList == null || !_cpeList.Any() || string.IsNullOrWhiteSpace(programName))
             return null;
 
-        // Program adını temizle
-        string cleaned = CleanProgramName(programName);
+        string cleanedProgramName = CleanProgramNameForSearch(programName).ToLower();
+        string programVersion = ExtractVersion(version ?? programName) ?? "";
+
+        double maxScore = 0;
+        CPEEntry? bestEntry = null;
+
+        // Daha akıllı ön filtreleme - tam isim eşleşmesi öncelikli
+        var potentialMatches = new List<CPEEntry>();
         
-        int maxScore = 0;
-        string? bestCpe = null;
-        string? bestTitle = null;
-        var candidateMatches = new List<(CPEEntry entry, int score, string reason)>();
-
-        foreach (var entry in cpeList)
+        // 1. Tam isim eşleşmesi ara
+        var exactMatches = _cpeList.AsParallel()
+            .Where(c => c.Product.Equals(cleanedProgramName, StringComparison.OrdinalIgnoreCase) || 
+                       c.Title.Equals(cleanedProgramName, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        
+        if (exactMatches.Any())
         {
-            // CPE verilerini temizle
-            string cleanTitle = entry.Title?.Replace("_", " ").Trim() ?? "";
-            string cleanVendor = entry.Vendor?.Replace("_", " ").Trim() ?? "";
-            string cleanProduct = entry.Product?.Replace("_", " ").Trim() ?? "";
-
-            // Farklı karşılaştırma stratejileri
-            var scores = new Dictionary<string, int>
-            {
-                // Ana eşleşmeler
-                ["title_exact"] = Fuzz.Ratio(cleaned.ToLower(), cleanTitle.ToLower()),
-                ["product_exact"] = Fuzz.Ratio(cleaned.ToLower(), cleanProduct.ToLower()),
-                ["vendor_exact"] = Fuzz.Ratio(cleaned.ToLower(), cleanVendor.ToLower()),
-                
-                // Orijinal isimle eşleşmeler
-                ["title_orig"] = Fuzz.Ratio(programName.ToLower(), cleanTitle.ToLower()),
-                ["product_orig"] = Fuzz.Ratio(programName.ToLower(), cleanProduct.ToLower()),
-                ["vendor_orig"] = Fuzz.Ratio(programName.ToLower(), cleanVendor.ToLower()),
-                
-                // Kısmi eşleşmeler
-                ["title_partial"] = Fuzz.PartialRatio(cleaned.ToLower(), cleanTitle.ToLower()),
-                ["product_partial"] = Fuzz.PartialRatio(cleaned.ToLower(), cleanProduct.ToLower()),
-                
-                // Token tabanlı eşleşmeler
-                ["title_token_sort"] = Fuzz.TokenSortRatio(cleaned.ToLower(), cleanTitle.ToLower()),
-                ["product_token_sort"] = Fuzz.TokenSortRatio(cleaned.ToLower(), cleanProduct.ToLower()),
-                ["title_token_set"] = Fuzz.TokenSetRatio(cleaned.ToLower(), cleanTitle.ToLower()),
-                ["product_token_set"] = Fuzz.TokenSetRatio(cleaned.ToLower(), cleanProduct.ToLower()),
-            };
-
-            // En yüksek skoru ve nedenini bul
-            var maxScoreEntry = scores.OrderByDescending(kvp => kvp.Value).First();
-            int score = maxScoreEntry.Value;
-            string reason = maxScoreEntry.Key;
-
-            // Debugging için adayları topla
-            if (score > 60 && enableDebug)
-            {
-                candidateMatches.Add((entry, score, reason));
-            }
-
-            // En iyi eşleşmeyi güncelle
-            if (score > maxScore && score > 70) // Eşik değeri
-            {
-                maxScore = score;
-                bestCpe = entry.CpeName;
-                bestTitle = cleanTitle;
-            }
-        }
-
-        // Debug çıktısı
-        if (enableDebug && candidateMatches.Count > 0)
-        {
-            Console.WriteLine($"[DEBUG] '{programName}' için en iyi 5 aday:");
-            foreach (var candidate in candidateMatches.OrderByDescending(c => c.score).Take(5))
-            {
-                Console.WriteLine($"  {candidate.score}% - {candidate.entry.Product} ({candidate.entry.Vendor}) [{candidate.reason}]");
-            }
-        }
-
-        // Sonucu raporla
-        if (bestCpe != null)
-        {
-            Console.WriteLine($"[CPE MATCH] '{programName}' -> '{bestTitle}' (score: {maxScore}%)");
-            Console.WriteLine($"[CPE] {bestCpe}");
+            potentialMatches.AddRange(exactMatches);
         }
         else
         {
-            // Düşük skorlu ama potansiyel eşleşmeleri göster
-            var bestCandidate = candidateMatches.OrderByDescending(c => c.score).FirstOrDefault();
-            if (bestCandidate.entry != null)
-            {
-                Console.WriteLine($"[CPE] '{programName}' için kesin eşleşme yok. En yakın: {bestCandidate.entry.Product} ({bestCandidate.score}%)");
-            }
-            else
-            {
-                Console.WriteLine($"[CPE] '{programName}' için CPE bulunamadı");
-            }
-        }
-
-        return bestCpe;
-    }
-
-    private string CleanProgramName(string programName)
-    {
-        // Yaygın gereksiz terimleri kaldır
-        string cleaned = System.Text.RegularExpressions.Regex.Replace(
-            programName,
-            @"(\d{4}|\d+\.\d+(\.\d+)?|x64|x86|amd64|i386|win32|win64|minimum|runtime|redistributable|microsoft|update|hotfix|kb\d+|sp\d+|service pack|\(.*?\)|\[.*?\])",
-            "",
-            System.Text.RegularExpressions.RegexOptions.IgnoreCase
-        );
-
-        // Fazla boşlukları temizle
-        cleaned = System.Text.RegularExpressions.Regex.Replace(cleaned, @"\s+", " ").Trim();
-        
-        return cleaned;
-    }
-
-    private string DecodeAndClean(string input)
-    {
-        if (string.IsNullOrWhiteSpace(input))
-            return "";
-
-        try
-        {
-            // URL decode işlemi
-            string decoded = System.Web.HttpUtility.UrlDecode(input);
-            
-            // Özel karakterleri temizle
-            decoded = decoded.Replace("_project", "")
-                           .Replace("_", " ")
-                           .Replace("%", "")
-                           .Replace("(aka ", "")
-                           .Replace(")", "")
-                           .Replace("com.", "");
-
-            // Fazla boşlukları temizle
-            decoded = System.Text.RegularExpressions.Regex.Replace(decoded, @"\s+", " ").Trim();
-            
-            return decoded;
-        }
-        catch
-        {
-            // Decode edilemezse orijinali döndür
-            return input.Replace("_", " ").Replace("%", "");
-        }
-    }
-}
-
-public class Example
-{
-    public void MatchCPE()
-    {
-        try
-        {
-            var searcher = new ManagementObjectSearcher("SELECT * FROM Win32_Product");
-            var cpeMatcher = new CPEMatcher("cpe_db.json");
-            
-            foreach (ManagementObject obj in searcher.Get())
-            {
-                string name = obj["Name"]?.ToString() ?? "Bilinmeyen";
-                
-                if (!string.IsNullOrWhiteSpace(name))
+            // 2. Anahtar kelime eşleşmesi ara (en az 2 ortak anahtar kelime zorunlu)
+            var candidateKeywords = cleanedProgramName.Split(' ').Where(k => k.Length > 2).Distinct().ToList();
+            var keywordMatches = _cpeList.AsParallel()
+                .Where(c =>
                 {
-                    Console.WriteLine($"\n--- Program: {name} ---");
-                    string? bestCpe = cpeMatcher.FindBestCPE(name);
-                    
-                    if (bestCpe != null)
+                    string target = ($"{c.Product} {c.Title}").ToLower();
+                    int overlapCount = candidateKeywords.Count(kw => target.Contains(kw));
+                    return overlapCount >= Math.Min(2, candidateKeywords.Count);
+                })
+                .ToList();
+            potentialMatches.AddRange(keywordMatches);
+        }
+
+        if (enableDebug) Console.WriteLine($"[DEBUG] Aday CPE sayısı: {potentialMatches.Count}");
+
+
+        foreach (var entry in potentialMatches)
+        {
+            double currentScore = 0;
+
+            string cpeProduct = (entry.Product ?? "").ToLower();
+            string cpeTitle = (entry.Title ?? "").ToLower();
+            string cpeVendor = (entry.Vendor ?? "").ToLower();
+
+            // 1. Temel Puan: Fuzzy string matching (birden fazla algoritma)
+            int titleScore = Fuzz.TokenSetRatio(cleanedProgramName, cpeTitle);
+            int productScore = Fuzz.TokenSetRatio(cleanedProgramName, cpeProduct);
+            int partialRatio = Fuzz.PartialRatio(cleanedProgramName, cpeTitle);
+            int tokenSortRatio = Fuzz.TokenSortRatio(cleanedProgramName, cpeTitle);
+            
+            // En yüksek fuzzy skorunu al
+            currentScore = Math.Max(Math.Max(titleScore, productScore), Math.Max(partialRatio, tokenSortRatio));
+
+            // 2. Bonus: Vendor (sağlayıcı) eşleşmesi
+            if (!string.IsNullOrEmpty(cpeVendor) && cleanedProgramName.Contains(cpeVendor))
+            {
+                currentScore += 10;
+            }
+
+            // 3. Bonus: Product (ürün) eşleşmesi
+            if (cleanedProgramName.Contains(cpeProduct))
+            {
+                currentScore += 5;
+            }
+
+            // 4. En Önemli Bonus: Versiyon eşleşmesi
+            if (!string.IsNullOrEmpty(programVersion) && !string.IsNullOrEmpty(entry.Version) && entry.Version != "*" && entry.Version != "-")
+            {
+                string cpeVersion = ExtractVersion(entry.Version) ?? "";
+                if (programVersion == cpeVersion)
+                {
+                    currentScore += 30; // Tam versiyon eşleşmesi çok güçlü bir sinyaldir
+                }
+            }
+
+            if (currentScore > maxScore)
+            {
+                maxScore = currentScore;
+                bestEntry = entry;
+            }
+        }
+
+        const int MIN_CONFIDENCE_SCORE = 80; // Biraz daha düşük eşik değeri
+        if (maxScore >= MIN_CONFIDENCE_SCORE && bestEntry != null)
+        {
+            if (enableDebug)
+            {
+                Console.WriteLine($"[CPE MATCH] '{programName}' -> '{bestEntry.Title}' (Skor: {maxScore:F2})");
+            }
+            return bestEntry.CpeName;
+        }
+
+        if (enableDebug)
+        {
+            Console.WriteLine($"[CPE] '{programName}' için güvenilir CPE bulunamadı. En iyi skor: {maxScore:F2} ({bestEntry?.Title})");
+        }
+
+        if (useHardcodedFallback)
+        {
+            string lowerOriginal = programName.ToLower();
+            string? mapped = null;
+            foreach (var kv in _hardcodedMatches)
+            {
+                string key = kv.Key.ToLower();
+                if (System.Text.RegularExpressions.Regex.IsMatch(lowerOriginal, $@"(^|\b){System.Text.RegularExpressions.Regex.Escape(key)}(\b|$)"))
+                {
+                    mapped = kv.Value;
+                    break;
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(mapped))
+            {
+                if (enableDebug) Console.WriteLine($"[DEBUG] Hardcoded fallback denenecek: {programName} -> {mapped}");
+
+                string fallbackClean = CleanProgramNameForSearch(mapped).ToLower();
+                var fallbackKeywords = fallbackClean.Split(' ').Where(k => k.Length > 2).Distinct().ToList();
+                var fallbackCandidates = _cpeList.AsParallel()
+                    .Where(c =>
                     {
-                        // CPE bulundu, şimdi bu CPE ile CVE araması yapabilirsin
-                        Console.WriteLine($"CPE eşleşmesi bulundu: {bestCpe}");
+                        string target = ($"{c.Product} {c.Title}").ToLower();
+                        int overlapCount = fallbackKeywords.Count(kw => target.Contains(kw));
+                        return overlapCount >= Math.Min(2, fallbackKeywords.Count) ||
+                               c.Product.Equals(fallbackClean, StringComparison.OrdinalIgnoreCase) ||
+                               c.Title.Equals(fallbackClean, StringComparison.OrdinalIgnoreCase);
+                    })
+                    .ToList();
+
+                double fbMax = 0;
+                CPEEntry? fbBest = null;
+                foreach (var entry in fallbackCandidates)
+                {
+                    double score = 0;
+                    string cpeProduct = (entry.Product ?? "").ToLower();
+                    string cpeTitle = (entry.Title ?? "").ToLower();
+                    int s1 = Fuzz.TokenSetRatio(fallbackClean, cpeTitle);
+                    int s2 = Fuzz.TokenSetRatio(fallbackClean, cpeProduct);
+                    int s3 = Fuzz.PartialRatio(fallbackClean, cpeTitle);
+                    int s4 = Fuzz.TokenSortRatio(fallbackClean, cpeTitle);
+                    score = Math.Max(Math.Max(s1, s2), Math.Max(s3, s4));
+
+                    if (!string.IsNullOrEmpty(programVersion) && !string.IsNullOrEmpty(entry.Version) && entry.Version != "*" && entry.Version != "-")
+                    {
+                        string cpeVersion = ExtractVersion(entry.Version) ?? "";
+                        if (programVersion == cpeVersion)
+                        {
+                            score += 30;
+                        }
                     }
+
+                    if (score > fbMax)
+                    {
+                        fbMax = score;
+                        fbBest = entry;
+                    }
+                }
+
+                if (fbMax >= 80 && fbBest != null)
+                {
+                    if (enableDebug)
+                    {
+                        Console.WriteLine($"[CPE MATCH - Fallback] '{programName}' -> '{fbBest.Title}' (Skor: {fbMax:F2})");
+                    }
+                    return fbBest.CpeName;
                 }
             }
         }
-        catch (Exception ex)
+
+        return null;
+    }
+
+    public static string CleanProgramNameForSearch(string programName)
+    {
+        // Daha akıllı temizleme - sadece gereksiz suffix'leri kaldır
+        string cleaned = programName;
+        
+        // Versiyon numaralarını kaldır (sadece sonundaki)
+        cleaned = Regex.Replace(cleaned, @"\s*-\s*\d+(\.\d+)*$", "", RegexOptions.IgnoreCase);
+        
+        // Gereksiz suffix'leri kaldır
+        cleaned = Regex.Replace(cleaned, @"\s*(x64|x86|amd64|win32|win64|64-bit|32-bit|minimum|runtime|redistributable|update|hotfix|kb\d+|sp\d+)\s*$", "", RegexOptions.IgnoreCase);
+        
+        // Parantez içindeki gereksiz bilgileri kaldır
+        cleaned = Regex.Replace(cleaned, @"\s*\([^)]*(?:x64|x86|amd64|win32|win64|64-bit|32-bit|minimum|runtime|redistributable|update|hotfix|kb\d+|sp\d+)[^)]*\)", "", RegexOptions.IgnoreCase);
+        
+        // Fazla boşlukları temizle
+        cleaned = Regex.Replace(cleaned, @"\s+", " ").Trim();
+        
+        return cleaned;
+    }
+    private string? ExtractVersion(string text)
+    {
+        // Genel versiyon numarası formatlarını yakalar (örn: 14.40.33810, 8.1.2, v1.2)
+        var match = Regex.Match(text, @"(\d+(\.\d+){1,3})");
+        if (match.Success)
         {
-            Console.WriteLine($"[HATA] CPE eşleme sırasında hata: {ex.Message}");
+            return match.Value;
         }
+        return null;
     }
 }
+
