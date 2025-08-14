@@ -1,13 +1,14 @@
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 public class CVEInfo
 {
-    public string Id { get; set; }
-    public string Description { get; set; }
-    public double CVSS { get; set; }
-    public bool HasExploit { get; set; }
+    public string Id { get; set; } = "N/A";
+    public string Description { get; set; } = "Açıklama yok.";
+    public double CVSS { get; set; } = 0.0;
+    public string Severity { get; set; } = "NONE";
 }
 
 public class CVEParser
@@ -15,43 +16,58 @@ public class CVEParser
     public static List<CVEInfo> ParseCVEInfo(string json)
     {
         var results = new List<CVEInfo>();
+        if (string.IsNullOrEmpty(json)) return results;
 
-        JObject data = JObject.Parse(json);
-        var vulnerabilities = data["vulnerabilities"];
-
-        if (vulnerabilities != null)
+        try
         {
+            JObject data = JObject.Parse(json);
+            var vulnerabilities = data["vulnerabilities"];
+
+            if (vulnerabilities == null || !vulnerabilities.Any())
+            {
+                return results;
+            }
+
             foreach (var vuln in vulnerabilities)
             {
-                try
+                var cve = vuln["cve"];
+                if (cve == null) continue;
+
+                // CVSS v3.1 verilerini önceliklendir
+                var cvssMetric = cve["metrics"]?["cvssMetricV31"]?.FirstOrDefault() ?? cve["metrics"]?["cvssMetricV30"]?.FirstOrDefault();
+                
+                double score = 0.0;
+                string severity = "NONE";
+
+                if (cvssMetric != null)
                 {
-                    var cve = vuln["cve"];
-                    string id = cve["id"]?.ToString() ?? "N/A";
-                    string description = cve["descriptions"]?[0]?["value"]?.ToString() ?? "N/A";
-                    string scoreStr = cve["metrics"]?["cvssMetricV31"]?[0]?["cvssData"]?["baseScore"]?.ToString() ??
-                                      cve["metrics"]?["cvssMetricV2"]?[0]?["cvssData"]?["baseScore"]?.ToString() ??
-                                      "0.0";
-
-                    double score = double.TryParse(scoreStr, out var s) ? s : 0.0;
-
-                    // CVE'lerde "exploit" bilgisi net şekilde dönmeyebilir, örnek olarak yüksek puanlı olanları exploit var sayıyoruz
-                    bool hasExploit = score >= 7.0;
-
-                    results.Add(new CVEInfo
+                    score = cvssMetric["cvssData"]?["baseScore"]?.Value<double>() ?? 0.0;
+                    severity = cvssMetric["cvssData"]?["baseSeverity"]?.ToString() ?? "NONE";
+                }
+                else // Fallback to CVSS v2 if v3 is not available
+                {
+                    var cvssV2Metric = cve["metrics"]?["cvssMetricV2"]?.FirstOrDefault();
+                    if(cvssV2Metric != null)
                     {
-                        Id = id,
-                        Description = description,
-                        CVSS = score,
-                        HasExploit = hasExploit
-                    });
+                        score = cvssV2Metric["cvssData"]?["baseScore"]?.Value<double>() ?? 0.0;
+                        severity = cvssV2Metric["severity"]?.ToString().ToUpper() ?? "NONE";
+                    }
                 }
-                catch (Exception ex)
+
+                results.Add(new CVEInfo
                 {
-                    Console.WriteLine($"Hata (CVE parse): {ex.Message}");
-                }
+                    Id = cve["id"]?.ToString() ?? "N/A",
+                    Description = cve["descriptions"]?.FirstOrDefault(d => d["lang"]?.ToString() == "en")?["value"]?.ToString() ?? "Açıklama bulunamadı.",
+                    CVSS = score,
+                    Severity = severity
+                });
             }
         }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[HATA] CVE JSON verisi ayrıştırılamadı: {ex.Message}");
+        }
 
-        return results;
+        return results.OrderByDescending(r => r.CVSS).ToList();
     }
 }
